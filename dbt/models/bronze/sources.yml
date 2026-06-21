@@ -5,6 +5,11 @@ sources:
     database: mip_db
     schema: public
     tables:
+      - name: calibration_uncertainty
+        description: "UQaaS uncertainty results — populated by uncertainty_enrichment DAG"
+        columns:
+          - name: id
+            tests: [unique, not_null]
       - name: raw_calibration
         description: "Bronze: raw instrument readings ingested by Airflow DAG"
         columns:
