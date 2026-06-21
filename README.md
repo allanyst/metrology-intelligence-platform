@@ -231,30 +231,6 @@ HPLC    → Normal(loc=level_mean, scale=level_sd)      # peak area uncertainty
 
 Results (u_combined, u_expanded_k2, coverage interval) are persisted in `calibration_uncertainty` and joined into the `fact_uncertainty` Gold model by dbt. UQaaS failures are non-blocking — the pipeline continues with `u_combined = NULL`.
 
----
-
-## CV entry (LaTeX)
-
-```latex
-\entrybig
-{\textbf{Metrology Intelligence Platform}}{}
-{Airflow, dbt, PostgreSQL, FastAPI, Docker, Python, SciPy}{2026}
-\innerlist{
-\entryextra{Medallion pipeline (Bronze/Silver/Gold) for analytical instrument
-calibration QC (XRF, HPLC, balance). Bronze ingests synthetic data via Airflow
-with idempotent upserts; Silver standardises readings by instrument type and
-pre-computes batch statistics (z-score, Laplace~$b=\text{MAD}/\ln 2$, HPLC
-RSD\%); Gold implements Levey-Jennings control charts with Westgard rules
-($1_{3s}$/$2_{2s}$/$R_{4s}$/reject, $4_{1s}$/$10_{\bar{x}}$/warning) in SQL
-window functions. An Airflow microservice task calls the UQaaS FastAPI
-(GUM~Supl.~1 Monte Carlo) to enrich Gold with $u_\text{combined}$ and
-$U(k{=}2)$ per instrument; results are joined back into dbt via a dedicated
-\texttt{calibration\_uncertainty} table. External REST API exposes calibration
-status, Levey-Jennings data, and active alerts (ISO~17025 reject/warning
-classification). 44 unit tests cover Westgard rules in isolation and
-statistical properties of the Laplace/Normal generators.}
-}
-```
 
 ---
 
