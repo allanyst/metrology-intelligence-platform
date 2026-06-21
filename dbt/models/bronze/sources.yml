@@ -1,0 +1,23 @@
+version: 2
+
+sources:
+  - name: mip_raw
+    database: mip_db
+    schema: public
+    tables:
+      - name: raw_calibration
+        description: "Bronze: raw instrument readings ingested by Airflow DAG"
+        columns:
+          - name: id
+            tests: [unique, not_null]
+          - name: batch_id
+            tests: [not_null]
+          - name: instrument_type
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ["XRF", "HPLC", "Balance"]
+          - name: reading
+            tests: [not_null]
+          - name: measured_at
+            tests: [not_null]

@@ -1,0 +1,42 @@
+version: 2
+
+models:
+  - name: stg_xrf
+    description: "Silver: XRF readings with batch statistics and z-scores"
+    columns:
+      - name: id
+        tests: [unique, not_null]
+      - name: element
+        tests: [not_null]
+      - name: reading_cps
+        tests: [not_null]
+      - name: batch_mean
+        tests: [not_null]
+      - name: batch_sd
+        tests: [not_null]
+
+  - name: stg_hplc
+    description: "Silver: HPLC calibration curve with per-level statistics"
+    columns:
+      - name: id
+        tests: [unique, not_null]
+      - name: analyte
+        tests: [not_null]
+      - name: concentration_mgL
+        tests: [not_null]
+      - name: peak_area
+        tests: [not_null]
+      - name: rsd_pct
+        tests: [not_null]
+
+  - name: stg_balances
+    description: "Silver: balance repeatability with Laplace u_rep pre-computed"
+    columns:
+      - name: id
+        tests: [unique, not_null]
+      - name: reading_g
+        tests: [not_null]
+      - name: laplace_b
+        tests: [not_null]
+      - name: u_rep_g
+        tests: [not_null]
