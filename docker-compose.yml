@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: mip
+      POSTGRES_PASSWORD: mip_pass
+      POSTGRES_DB: mip_db
+    ports:
+      - "5436:5432"
+    volumes:
+      - ./docker/init-db:/docker-entrypoint-initdb.d
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mip -d mip_db"]
+      interval: 10s
+      retries: 5
+
+  airflow:
+    build: ./airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://mip:mip_pass@postgres:5432/mip_db
+      AIRFLOW__WEBSERVER__SECRET_KEY: mip_secret_key_2026
+      UQAAS_API_URL: http://host.docker.internal:8003
+      MIP_DB_URL: postgresql://mip:mip_pass@postgres:5432/mip_db
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./airflow/dbt_profiles:/opt/airflow/dbt_profiles
+      - ./dbt:/opt/airflow/dbt
+      - ./core:/opt/airflow/core
+      - airflow_logs:/opt/airflow/logs
+    ports:
+      - "8081:8080"
+    command: bash -c "airflow db migrate && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@mip.local; airflow scheduler & airflow webserver"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pg_data:
+  airflow_logs:
