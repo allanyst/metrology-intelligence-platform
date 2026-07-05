@@ -39,8 +39,9 @@ Westgard rules implemented: **1₃s** (reject), **2₂s** (reject), **R₄s** (r
               │  SILVER          stg_xrf · stg_hplc · stg_balances │
               │  (dbt views)     z_score · laplace_b · rsd_pct     │
               │                                                     │
-              │  GOLD            fact_control_charts (Westgard SQL) │
-              │  (dbt tables)    fact_calibration_status            │
+              │  GOLD            fact_control_charts   (XRF Westgard)│
+              │  (dbt tables)    fact_balance_chart    (Balance L-J) │
+              │                  fact_calibration_status            │
               │                  fact_uncertainty  ←── UQaaS join  │
               │                  dim_instruments                    │
               │                                                     │
@@ -67,7 +68,8 @@ Westgard rules implemented: **1₃s** (reject), **2₂s** (reject), **R₄s** (r
                            │   Dashboard  :8502        │
                            │   Streamlit + Plotly      │
                            │   Overview · Levey-Jennings│
-                           │   Alerts · Uncertainty    │
+                           │   Linearity · Alerts ·    │
+                           │   Uncertainty             │
                            └───────────────────────────┘
 ```
 
@@ -75,7 +77,7 @@ Westgard rules implemented: **1₃s** (reject), **2₂s** (reject), **R₄s** (r
 
 ```
 07:00  ingest_calibration      Bronze: synthetic XRF/HPLC/Balance data → raw_calibration
-07:30  transform_pipeline      dbt run (Silver + Gold) → dbt test (37 tests)
+07:30  transform_pipeline      dbt run (Silver + Gold) → dbt test (44 tests)
                                 └─▶ trigger uncertainty_enrichment
 08:00  uncertainty_enrichment  calls UQaaS /calculate/ × 5 → calibration_uncertainty
 ```
@@ -117,7 +119,7 @@ metrology-intelligence-platform/
 │       ├── calibration.py      # GET /calibration/, /{id}, /{id}/chart
 │       └── alerts.py           # GET /alerts/, /alerts/summary
 ├── dashboard/
-│   ├── app.py                  # Streamlit: Overview/Levey-Jennings/Alerts/Uncertainty
+│   ├── app.py                  # Streamlit: Overview/Levey-Jennings/Linearity/Alerts/Uncertainty
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── docker/
@@ -158,7 +160,9 @@ Balance uses a **Laplace error model** (robust to vibration-induced shock errors
 | `GET` | `/health` | Liveness check |
 | `GET` | `/calibration/` | All instruments — latest QC status + uncertainty (filter by type/status) |
 | `GET` | `/calibration/{id}` | Full detail for one instrument: u_combined, U(k=2), dominant Westgard rule |
-| `GET` | `/calibration/{id}/chart?element=Fe` | Levey-Jennings data: 30 points with z_score + violation_rule |
+| `GET` | `/calibration/{id}/chart?element=Fe` | XRF Levey-Jennings: 30 points with z_score + Westgard violation_rule |
+| `GET` | `/calibration/{id}/balance-chart` | Balance Levey-Jennings: check-weight z-scores (u_rep = b√2) + 1₃s/2₂s |
+| `GET` | `/calibration/{id}/linearity` | HPLC calibration curve: per-level means + OLS slope/intercept/R² |
 | `GET` | `/alerts/` | Instruments not in_control, ordered by severity |
 | `GET` | `/alerts/summary` | Counts by severity, instrument type, Westgard rule |
 
@@ -166,7 +170,7 @@ Interactive docs: **http://localhost:8004/docs**
 
 ---
 
-## dbt models — 37 data tests
+## dbt models — 44 data tests
 
 | Layer | Model | Materialization | Key tests |
 |---|---|---|---|
@@ -175,6 +179,7 @@ Interactive docs: **http://localhost:8004/docs**
 | Silver | `stg_hplc` | View | unique id, not_null analyte/rsd_pct |
 | Silver | `stg_balances` | View | unique id, not_null laplace_b/u_rep_g |
 | Gold | `fact_control_charts` | Table | unique id, accepted_values qc_status |
+| Gold | `fact_balance_chart` | Table | unique id, not_null z_score, accepted_values qc_status |
 | Gold | `fact_calibration_status` | Table | not_null calibration_status, accepted_values |
 | Gold | `fact_uncertainty` | Table | LEFT JOIN fact_calibration_status + calibration_uncertainty |
 | Gold | `dim_instruments` | Table | unique instrument_id |
@@ -240,10 +245,12 @@ The `uncertainty_enrichment` DAG calls [UQaaS](https://gitlab.com/plasmallan/uqa
 ```
 XRF     → Normal(loc=batch_mean, scale=batch_sd/√n)   # Type A, GUM §4.2
 Balance → Laplace(loc=batch_median, scale=MAD/ln2)    # MLE Laplace, u=b√2
-HPLC    → Normal(loc=level_mean, scale=level_sd)      # peak area uncertainty
+HPLC    → Normal(loc=level_mean, scale=level_sd)      # top calibration level
 ```
 
 Results (u_combined, u_expanded_k2, coverage interval) are persisted in `calibration_uncertainty` and joined into the `fact_uncertainty` Gold model by dbt. UQaaS failures are non-blocking — the pipeline continues with `u_combined = NULL`.
+
+Because the HPLC uncertainty is evaluated at the **highest calibration level** (not the cross-level average), `fact_uncertainty` exposes `uncertainty_ref_value` = the centre of the coverage interval (the UQaaS `loc`), and computes `rel_u_expanded_pct` against it. This keeps U(k=2), the coverage interval, and the relative uncertainty mutually consistent for every instrument type.
 
 
 ---
@@ -253,7 +260,7 @@ Results (u_combined, u_expanded_k2, coverage interval) are persisted in `calibra
 | Layer | Technology |
 |---|---|
 | Orchestration | Apache Airflow 2.8.1, LocalExecutor |
-| Transformations | dbt-postgres 1.8.2 (view + table, 37 data tests) |
+| Transformations | dbt-postgres 1.8.2 (view + table, 44 data tests) |
 | Persistence | PostgreSQL 15, psycopg2 |
 | API | FastAPI 0.111, Pydantic v2, Uvicorn |
 | Dashboard | Streamlit 1.35, Plotly 5.22 (Levey-Jennings, alerts) |

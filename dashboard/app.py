@@ -92,10 +92,55 @@ if cals is not None:
 
 st.divider()
 
+# ── Levey-Jennings figure helper ──────────────────────────────────────────────
+
+def ljs_figure(df: pd.DataFrame, title: str):
+    """Build a Levey-Jennings z-score chart from a normalized dataframe with
+    columns: measured_at, z_score, violation_rule."""
+    fig = go.Figure()
+
+    for mult, color in [(3, "rgba(231,76,60,0.08)"), (2, "rgba(243,156,18,0.10)")]:
+        fig.add_hrect(
+            y0=-mult, y1=mult, fillcolor=color, line_width=0,
+            annotation_text=f"±{mult}σ", annotation_position="top right",
+        )
+    fig.add_hline(y=0, line_dash="dash", line_color="grey", line_width=1)
+
+    mask_ok = df["violation_rule"].isna()
+    fig.add_trace(go.Scatter(
+        x=df.loc[mask_ok, "measured_at"], y=df.loc[mask_ok, "z_score"],
+        mode="markers+lines", name="In control",
+        marker=dict(color="#2ecc71", size=7), line=dict(color="#2ecc71", width=1),
+    ))
+
+    if (~mask_ok).any():
+        df_viol = df[~mask_ok]
+        reject_mask = df_viol["violation_rule"].isin(["1_3s", "2_2s", "R_4s"])
+        for is_reject, grp in [(True, df_viol[reject_mask]), (False, df_viol[~reject_mask])]:
+            if grp.empty:
+                continue
+            fig.add_trace(go.Scatter(
+                x=grp["measured_at"], y=grp["z_score"], mode="markers",
+                name="Reject" if is_reject else "Warning",
+                marker=dict(color="#e74c3c" if is_reject else "#f39c12",
+                            size=11, symbol="x" if is_reject else "diamond"),
+                text=grp["violation_rule"],
+                hovertemplate="%{x}<br>z=%{y:.2f}<br>Rule: %{text}<extra></extra>",
+            ))
+
+    fig.update_layout(
+        title=title, xaxis_title="Date", yaxis_title="z-score",
+        yaxis=dict(range=[-4, 4]), height=420,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        margin=dict(t=60, b=40),
+    )
+    return fig
+
+
 # ── tabs ──────────────────────────────────────────────────────────────────────
 
-tab_overview, tab_chart, tab_alerts, tab_uncertainty = st.tabs(
-    ["📋 Overview", "📈 Levey-Jennings", "🚨 Alerts", "📐 Uncertainty"]
+tab_overview, tab_chart, tab_linearity, tab_alerts, tab_uncertainty = st.tabs(
+    ["📋 Overview", "📈 Levey-Jennings", "📉 HPLC Linearity", "🚨 Alerts", "📐 Uncertainty"]
 )
 
 # ── Tab 1: Overview ───────────────────────────────────────────────────────────
@@ -132,93 +177,109 @@ with tab_chart:
         st.stop()
 
     df_cal = pd.DataFrame(cals)
-    xrf_df = df_cal[df_cal["instrument_type"] == "XRF"]
+    chartable = df_cal[df_cal["instrument_type"].isin(["XRF", "Balance"])]
 
-    if xrf_df.empty:
-        st.info("Levey-Jennings charts are available for XRF instruments only.")
+    if chartable.empty:
+        st.info("Levey-Jennings charts apply to XRF and Balance instruments.")
         st.stop()
+
+    opts = (
+        chartable[["instrument_id", "instrument_type"]]
+        .drop_duplicates()
+        .sort_values("instrument_id")
+    )
+    labels = {f"{r.instrument_id}  ({r.instrument_type})":
+              (r.instrument_id, r.instrument_type) for r in opts.itertuples()}
 
     col_a, col_b = st.columns(2)
-    inst_id = col_a.selectbox("Instrument (XRF)", xrf_df["instrument_id"].unique())
+    picked = col_a.selectbox("Instrument", list(labels.keys()))
+    inst_id, inst_type = labels[picked]
 
-    detail = get(f"/calibration/{inst_id}")
-    if not detail:
-        st.stop()
+    if inst_type == "XRF":
+        detail = get(f"/calibration/{inst_id}")
+        if not detail:
+            st.stop()
+        analytes = sorted({r.get("analyte_or_element") for r in detail
+                           if r.get("analyte_or_element")})
+        analyte = col_b.selectbox("Element", analytes)
+        chart_data = get(f"/calibration/{inst_id}/chart", {"element": analyte})
+        title = f"Levey-Jennings — {inst_id} / {analyte}"
+    else:  # Balance
+        chart_data = get(f"/calibration/{inst_id}/balance-chart")
+        title = f"Levey-Jennings — {inst_id} / mass (u_rep = b√2)"
 
-    analytes = list({r.get("analyte_or_element") for r in detail if r.get("analyte_or_element")})
-    analyte = col_b.selectbox("Element", analytes)
-
-    chart_data = get(f"/calibration/{inst_id}/chart", {"element": analyte})
     if not chart_data:
         st.stop()
 
     df = pd.DataFrame(chart_data)
     df["measured_at"] = pd.to_datetime(df["measured_at"])
 
-    mean_val = df["reading"].mean() if "reading" in df.columns else 0
-    sd_val   = df["z_score"].std() if len(df) > 1 else 1
+    st.plotly_chart(ljs_figure(df, title), use_container_width=True)
+
+    if inst_type == "Balance":
+        st.caption("z = (reading − nominal − bias) / u_rep, with the robust "
+                   "Laplace scale u_rep = b·√2. Rules applied: 1₃s, 2₂s.")
+
+    with st.expander("Raw data"):
+        st.dataframe(df, use_container_width=True)
+
+
+# ── Tab: HPLC Linearity ───────────────────────────────────────────────────────
+
+with tab_linearity:
+    if cals is None:
+        st.stop()
+
+    df_cal = pd.DataFrame(cals)
+    hplc_df = df_cal[df_cal["instrument_type"] == "HPLC"]
+
+    if hplc_df.empty:
+        st.info("Linearity plots apply to HPLC instruments.")
+        st.stop()
+
+    inst_id = st.selectbox("Instrument (HPLC)", hplc_df["instrument_id"].unique())
+    lin = get(f"/calibration/{inst_id}/linearity")
+    if not lin:
+        st.stop()
+
+    levels = pd.DataFrame(lin["levels"])
+    slope, intercept, r2 = lin["slope"], lin["intercept"], lin["r_squared"]
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("R²", f"{r2:.6f}")
+    c2.metric("Slope", f"{slope:.2f}")
+    c3.metric("Intercept", f"{intercept:.2f}")
 
     fig = go.Figure()
-
-    # control limit bands
-    for mult, label, color in [
-        (3, "±3σ", "rgba(231,76,60,0.08)"),
-        (2, "±2σ", "rgba(243,156,18,0.10)"),
-    ]:
-        fig.add_hrect(
-            y0=mult * -1, y1=mult,
-            fillcolor=color, line_width=0,
-            annotation_text=f"±{mult}σ", annotation_position="top right",
-        )
-
-    # centre line
-    fig.add_hline(y=0, line_dash="dash", line_color="grey", line_width=1)
-
-    # all points
-    mask_ok = df["violation_rule"].isna()
+    # measured level means with SD error bars
     fig.add_trace(go.Scatter(
-        x=df.loc[mask_ok, "measured_at"],
-        y=df.loc[mask_ok, "z_score"],
-        mode="markers+lines",
-        name="In control",
-        marker=dict(color="#2ecc71", size=7),
-        line=dict(color="#2ecc71", width=1),
+        x=levels["concentration_mgL"], y=levels["mean_area"],
+        error_y=dict(type="data", array=levels["sd_area"].fillna(0), visible=True),
+        mode="markers", name="Level mean",
+        marker=dict(color="#3498db", size=9),
     ))
-
-    # violation points
-    if (~mask_ok).any():
-        df_viol = df[~mask_ok]
-        reject_mask = df_viol["violation_rule"].isin(["1_3s", "2_2s", "R_4s"])
-        for is_reject, grp in [(True, df_viol[reject_mask]), (False, df_viol[~reject_mask])]:
-            if grp.empty:
-                continue
-            fig.add_trace(go.Scatter(
-                x=grp["measured_at"],
-                y=grp["z_score"],
-                mode="markers",
-                name="Reject" if is_reject else "Warning",
-                marker=dict(
-                    color="#e74c3c" if is_reject else "#f39c12",
-                    size=11,
-                    symbol="x" if is_reject else "diamond",
-                ),
-                text=grp["violation_rule"],
-                hovertemplate="%{x}<br>z=%{y:.2f}<br>Rule: %{text}",
-            ))
-
+    # OLS fit line
+    x_line = [levels["concentration_mgL"].min(), levels["concentration_mgL"].max()]
+    y_line = [slope * x + intercept for x in x_line]
+    fig.add_trace(go.Scatter(
+        x=x_line, y=y_line, mode="lines", name=f"OLS fit (R²={r2:.5f})",
+        line=dict(color="#e74c3c", width=2, dash="dash"),
+    ))
     fig.update_layout(
-        title=f"Levey-Jennings — {inst_id} / {analyte}",
-        xaxis_title="Date",
-        yaxis_title="z-score",
-        yaxis=dict(range=[-4, 4]),
-        height=420,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        title=f"HPLC calibration curve — {inst_id} / {lin['analyte']}",
+        xaxis_title="Concentration (mg/L)", yaxis_title="Peak area",
+        height=420, legend=dict(orientation="h", yanchor="bottom", y=1.02),
         margin=dict(t=60, b=40),
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    with st.expander("Raw data"):
-        st.dataframe(df, use_container_width=True)
+    st.subheader("Per-level repeatability")
+    levels_show = levels.rename(columns={
+        "concentration_mgL": "Conc (mg/L)", "mean_area": "Mean area",
+        "sd_area": "SD area", "rsd_pct": "RSD %", "n_replicates": "n",
+    })
+    st.dataframe(levels_show, use_container_width=True, hide_index=True)
+    st.caption("Acceptance (ICH Q2): R² > 0.999 and RSD < 5% at each level.")
 
 
 # ── Tab 3: Alerts ─────────────────────────────────────────────────────────────
@@ -283,29 +344,32 @@ with tab_uncertainty:
     df_u = df_u[has_u].copy()
     df_u["label"] = df_u["instrument_id"] + " / " + df_u["analyte_or_element"].fillna("")
 
+    # Relative expanded uncertainty is comparable across instruments; absolute
+    # U(k=2) is not (balance ~1e-4 g vs HPLC ~1e2 area units).
     fig_u = go.Figure()
     fig_u.add_trace(go.Bar(
-        name="U(k=2)",
+        name="rel U(k=2) %",
         x=df_u["label"],
-        y=df_u["u_expanded_k2"],
+        y=df_u["rel_u_expanded_pct"],
         marker_color=[STATUS_COLOR.get(s, "#95a5a6") for s in df_u["calibration_status"]],
-        error_y=dict(
-            type="data",
-            array=(df_u["u_expanded_k2"] - df_u.get("u_combined", df_u["u_expanded_k2"] / 2)).tolist(),
-            visible=True,
-        ),
+        text=df_u["rel_u_expanded_pct"].map(lambda v: f"{v:.2f}%"),
+        textposition="outside",
     ))
     fig_u.update_layout(
-        title="Expanded uncertainty U(k=2) by instrument",
-        yaxis_title="U(k=2)",
+        title="Relative expanded uncertainty  U(k=2) / reference value  (%)",
+        yaxis_title="rel. U(k=2)  (%)",
         xaxis_tickangle=-30,
-        height=380,
-        margin=dict(t=60, b=80),
+        height=400,
+        margin=dict(t=60, b=90),
     )
     st.plotly_chart(fig_u, use_container_width=True)
 
     cols_show = ["instrument_id", "instrument_type", "analyte_or_element",
-                 "u_combined", "u_expanded_k2", "coverage_lower", "coverage_upper",
+                 "uncertainty_ref_value", "u_combined", "u_expanded_k2",
+                 "coverage_lower", "coverage_upper", "rel_u_expanded_pct",
                  "calibration_status"]
     cols_show = [c for c in cols_show if c in df_u.columns]
     st.dataframe(df_u[cols_show], use_container_width=True, hide_index=True)
+    st.caption("Reference value = centre of the UQaaS coverage interval (the "
+               "`loc` the uncertainty pertains to). For HPLC this is the "
+               "highest calibration level, not the cross-level mean.")

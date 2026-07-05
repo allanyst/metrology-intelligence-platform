@@ -28,10 +28,21 @@ SELECT
     u.n_simulations                         AS uqaas_n_simulations,
     u.uqaas_calc_id,
     u.computed_at                           AS uncertainty_computed_at,
-    -- Relative expanded uncertainty (metrological KPI)
+    -- Reference value the uncertainty pertains to = the UQaaS `loc`
+    -- (centre of the coverage interval). For XRF/Balance this equals the
+    -- batch mean/median; for HPLC it is the specific calibration level the
+    -- uncertainty was computed at (not the cross-level average mean_value).
+    -- Falls back to mean_value until enrichment has run.
+    COALESCE((u.coverage_lower + u.coverage_upper) / 2.0, s.mean_value)
+                                            AS uncertainty_ref_value,
+    -- Relative expanded uncertainty (metrological KPI), computed against the
+    -- reference value so coverage, U(k=2) and rel% are always self-consistent.
     CASE
-        WHEN u.u_expanded_k2 IS NOT NULL AND s.mean_value > 0
-        THEN ROUND((u.u_expanded_k2 / s.mean_value * 100)::numeric, 4)
+        WHEN u.u_expanded_k2 IS NOT NULL
+         AND COALESCE((u.coverage_lower + u.coverage_upper) / 2.0, s.mean_value) > 0
+        THEN ROUND((u.u_expanded_k2
+                    / COALESCE((u.coverage_lower + u.coverage_upper) / 2.0, s.mean_value)
+                    * 100)::numeric, 4)
         ELSE NULL
     END                                     AS rel_u_expanded_pct
 FROM {{ ref("fact_calibration_status") }} s
