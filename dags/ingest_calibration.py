@@ -34,9 +34,12 @@ def ingest_calibration_data(**context):
 
     logical_date = context["logical_date"]
     seed = int(logical_date.strftime("%Y%m%d")) % (2**31)
+    # anchor the batch date/timestamps to the run date so each day is a
+    # distinct, non-colliding batch (batch_id carries YYYYMMDD)
+    start = datetime(logical_date.year, logical_date.month, logical_date.day, 8, 0)
 
     print(f"Generating synthetic data for {logical_date.date()} (seed={seed})")
-    datasets = generate_full_dataset(seed=seed)
+    datasets = generate_full_dataset(seed=seed, start=start)
 
     all_rows = dataset_to_rows(datasets)
 

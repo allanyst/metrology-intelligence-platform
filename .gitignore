@@ -3,3 +3,8 @@ __pycache__/
 .env
 pg_data/
 airflow_logs/
+
+# dbt anonymous-usage id (auto-generated)
+.user.yml
+dbt/target/
+dbt/logs/

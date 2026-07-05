@@ -152,12 +152,20 @@ def generate_balance_calibration(
 
 # ── Combined generator ────────────────────────────────────────────────────────
 
-def generate_full_dataset(seed: int = 42) -> dict[str, pd.DataFrame]:
+def generate_full_dataset(
+    seed: int = 42,
+    start: datetime | None = None,
+) -> dict[str, pd.DataFrame]:
     """
     Generate one batch of synthetic calibration data for all instrument types.
     Returns a dict keyed by instrument type.
+
+    ``start`` sets the batch date: it flows into each instrument's ``batch_id``
+    (``…-YYYYMMDD``) and reading timestamps, so distinct days yield distinct,
+    non-colliding batches. Defaults to 2026-06-21 08:00 for backward
+    compatibility.
     """
-    start = datetime(2026, 6, 21, 8, 0)
+    start = start or datetime(2026, 6, 21, 8, 0)
     return {
         "xrf_fe":  generate_xrf_calibration(element="Fe", seed=seed,     start=start),
         "xrf_cu":  generate_xrf_calibration(element="Cu", seed=seed + 1, start=start,

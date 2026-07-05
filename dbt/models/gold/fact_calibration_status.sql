@@ -104,10 +104,34 @@ balance_status AS (
         NULL::double precision              AS u_combined
     FROM {{ ref("stg_balances") }}
     GROUP BY batch_id, instrument_id, measurement_date
+),
+
+-- Operational "current status" grain: one row per instrument/analyte, keeping
+-- the most recent measurement_date. Full per-reading history lives in
+-- fact_control_charts / fact_balance_chart; the SCD Type 2 snapshot versions
+-- this current status over time.
+unioned AS (
+    SELECT * FROM xrf_status
+    UNION ALL
+    SELECT * FROM hplc_status
+    UNION ALL
+    SELECT * FROM balance_status
+),
+
+latest AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY instrument_id, analyte_or_element
+            ORDER BY measurement_date DESC
+        ) AS _rn
+    FROM unioned
 )
 
-SELECT * FROM xrf_status
-UNION ALL
-SELECT * FROM hplc_status
-UNION ALL
-SELECT * FROM balance_status
+SELECT
+    batch_id, instrument_id, instrument_type, analyte_or_element,
+    measurement_date, n_readings, mean_value, sd_value, cv_pct,
+    n_rejected, n_warnings, dominant_rule, calibration_status,
+    u_rep, r_squared, u_combined
+FROM latest
+WHERE _rn = 1

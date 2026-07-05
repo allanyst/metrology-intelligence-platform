@@ -35,9 +35,10 @@ detail = get("/calibration/XRF-001")
 assert len(detail) == 3, f"expected 3 elements for XRF-001, got {len(detail)}"
 print(f"[OK] /calibration/XRF-001 → {len(detail)} elements")
 
-# /calibration/{id}/chart
+# /calibration/{id}/chart  (30 points per daily batch; multi-day after backfill)
 chart = get("/calibration/XRF-001/chart?element=Fe")
-assert len(chart) == 30, f"expected 30 chart points, got {len(chart)}"
+assert len(chart) >= 30 and len(chart) % 30 == 0, \
+    f"expected a multiple of 30 chart points, got {len(chart)}"
 z_scores = [p["z_score"] for p in chart]
 print(f"[OK] /calibration/XRF-001/chart?element=Fe → {len(chart)} pts "
       f"z=[{min(z_scores):.2f}, {max(z_scores):.2f}]")

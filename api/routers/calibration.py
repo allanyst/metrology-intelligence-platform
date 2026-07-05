@@ -217,9 +217,12 @@ def get_balance_chart(instrument_id: str):
 @router.get("/{instrument_id}/linearity", response_model=LinearityResponse)
 def get_linearity(instrument_id: str):
     """
-    HPLC calibration-curve linearity: per-level mean peak area vs concentration
-    plus the ordinary-least-squares fit (slope, intercept, R²) over all
-    replicate points.
+    HPLC calibration-curve linearity for the most recent batch: per-level mean
+    peak area vs concentration plus the ordinary-least-squares fit
+    (slope, intercept, R²) over that batch's replicate points.
+
+    A calibration curve is established per run, so this is scoped to the latest
+    measurement_date rather than pooled across days.
     """
     reg = query("""
         SELECT
@@ -229,7 +232,9 @@ def get_linearity(instrument_id: str):
             MIN(analyte)                                 AS analyte
         FROM public_silver.stg_hplc
         WHERE instrument_id = %s
-    """, (instrument_id,))
+          AND measurement_date = (SELECT MAX(measurement_date)
+                                  FROM public_silver.stg_hplc WHERE instrument_id = %s)
+    """, (instrument_id, instrument_id))
 
     if not reg or reg[0]["slope"] is None:
         raise HTTPException(
@@ -246,8 +251,10 @@ def get_linearity(instrument_id: str):
             n_replicates
         FROM public_silver.stg_hplc
         WHERE instrument_id = %s
+          AND measurement_date = (SELECT MAX(measurement_date)
+                                  FROM public_silver.stg_hplc WHERE instrument_id = %s)
         ORDER BY concentration_mgL
-    """, (instrument_id,))
+    """, (instrument_id, instrument_id))
 
     r = reg[0]
     return LinearityResponse(

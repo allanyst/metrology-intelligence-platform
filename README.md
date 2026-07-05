@@ -124,7 +124,8 @@ metrology-intelligence-platform/
 │           ├── fact_uncertainty.sql        # JOIN with UQaaS results
 │           └── dim_instruments.sql
 ├── ci/
-│   └── seed_db.py              # apply init-db SQL + seed synthetic Bronze (CI/local)
+│   ├── seed_db.py             # apply init-db SQL + seed one day of Bronze (CI/local)
+│   └── backfill_demo.py       # backfill N days → incremental appends + SCD history
 ├── .gitlab-ci.yml             # unit-tests + dbt build against a Postgres service
 ├── api/
 │   ├── main.py
@@ -272,6 +273,20 @@ docker exec <airflow-container> airflow dags trigger transform_pipeline
 docker exec <airflow-container> airflow dags unpause uncertainty_enrichment
 docker exec <airflow-container> airflow dags trigger uncertainty_enrichment
 ```
+
+### Seed multi-day demo history
+
+To populate several days at once so the **incremental** models show appends and
+the **SCD Type 2** snapshot shows real status transitions:
+
+```bash
+docker exec <airflow-container> python /opt/airflow/ci/backfill_demo.py 7
+```
+
+Each day is a distinct batch (`batch_id` carries the date); the snapshot opens a
+new version whenever an instrument's status changes. The operational views
+(`/calibration/`, `/alerts/`) show the latest day; the Levey-Jennings charts show
+the full history.
 
 ### Tests
 
