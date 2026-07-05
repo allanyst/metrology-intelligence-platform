@@ -61,6 +61,13 @@ Westgard rules implemented: **1₃s** (reject), **2₂s** (reject), **R₄s** (r
                            │   GET /calibration/chart  │
                            │   GET /alerts/            │
                            │   GET /alerts/summary     │
+                           └───────────────┬───────────┘
+                                           │
+                           ┌───────────────▼──────────┐
+                           │   Dashboard  :8502        │
+                           │   Streamlit + Plotly      │
+                           │   Overview · Levey-Jennings│
+                           │   Alerts · Uncertainty    │
                            └───────────────────────────┘
 ```
 
@@ -109,6 +116,10 @@ metrology-intelligence-platform/
 │   └── routers/
 │       ├── calibration.py      # GET /calibration/, /{id}, /{id}/chart
 │       └── alerts.py           # GET /alerts/, /alerts/summary
+├── dashboard/
+│   ├── app.py                  # Streamlit: Overview/Levey-Jennings/Alerts/Uncertainty
+│   ├── Dockerfile
+│   └── requirements.txt
 ├── docker/
 │   └── init-db/
 │       ├── 01_schema.sql       # raw_calibration Bronze table
@@ -134,7 +145,9 @@ metrology-intelligence-platform/
 | **Balance** | Laplace (robust) | MAD / ln(2) = b | u_rep = b√2 |
 | **HPLC** | Normal (linearity) | peak area SD | u = SD (level) |
 
-XRF uses a **Laplace error model** for small n (robust to outliers from sample contamination or detector saturation). Balance uses Laplace for vibration-induced shock errors.
+Balance uses a **Laplace error model** (robust to vibration-induced shock errors), estimated via `b = MAD/ln(2)`.
+
+**Robust Levey-Jennings limits:** the XRF z-score uses `σ = 1.4826·MAD` (median absolute deviation), not the sample `STDDEV`. The sample SD is inflated by the very 3–5σ outliers the control chart is meant to catch, masking them so no Westgard rule fires. The MAD-based scale is insensitive to a minority of outliers, so genuine spikes and systematic drift correctly trigger `1₃s`/`2₂s`.
 
 ---
 
@@ -182,14 +195,15 @@ Interactive docs: **http://localhost:8004/docs**
 git clone git@gitlab.com:plasmallan/metrology-intelligence-platform.git
 cd metrology-intelligence-platform
 
-# Start PostgreSQL + MIP API + Airflow
+# Start PostgreSQL + MIP API + Dashboard + Airflow
 docker compose up -d
 
 # Services:
-#   MIP API : http://localhost:8004
-#   Docs    : http://localhost:8004/docs
-#   Airflow : http://localhost:8081  (admin / admin)
-#   PG      : localhost:5436
+#   Dashboard : http://localhost:8502   (Streamlit)
+#   MIP API   : http://localhost:8004
+#   Docs      : http://localhost:8004/docs
+#   Airflow   : http://localhost:8081   (admin / admin)
+#   PG        : localhost:5436
 ```
 
 ### Trigger the full pipeline manually
@@ -242,7 +256,8 @@ Results (u_combined, u_expanded_k2, coverage interval) are persisted in `calibra
 | Transformations | dbt-postgres 1.8.2 (view + table, 37 data tests) |
 | Persistence | PostgreSQL 15, psycopg2 |
 | API | FastAPI 0.111, Pydantic v2, Uvicorn |
+| Dashboard | Streamlit 1.35, Plotly 5.22 (Levey-Jennings, alerts) |
 | Uncertainty | UQaaS microservice (GUM Supl. 1, Monte Carlo, Laplace/Normal) |
 | Generators | NumPy, SciPy (Laplace MLE, Normal, HPLC linearity) |
-| Containerisation | Docker Compose (3 services: postgres, api, airflow) |
+| Containerisation | Docker Compose (4 services: postgres, api, dashboard, airflow) |
 | Tests | pytest (44 unit tests), smoke_api.py (6 API assertions) |

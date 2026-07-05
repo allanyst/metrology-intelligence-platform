@@ -1,1 +1,5 @@
-__pycache__/\n*.pyc\n.env\npg_data/\nairflow_logs/
+__pycache__/
+*.pyc
+.env
+pg_data/
+airflow_logs/
