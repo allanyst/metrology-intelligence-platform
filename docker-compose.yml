@@ -25,6 +25,13 @@ services:
     ports:
       - "8004:8000"
 
+  dashboard:
+    build: ./dashboard
+    depends_on:
+      - api
+    ports:
+      - "8502:8501"
+
   airflow:
     build: ./airflow
     depends_on:

@@ -29,8 +29,11 @@ class InstrumentSummary(BaseModel):
     cv_pct:              float | None
     u_combined:          float | None
     u_expanded_k2:       float | None
+    coverage_lower:      float | None
+    coverage_upper:      float | None
     rel_u_expanded_pct:  float | None
     r_squared:           float | None
+    dominant_rule:       str | None
     measurement_date:    str | None
 
 
@@ -81,8 +84,9 @@ def list_calibration_status(
                CAST(mean_value AS float)          AS mean_value,
                CAST(cv_pct AS float)              AS cv_pct,
                u_combined, u_expanded_k2,
+               coverage_lower, coverage_upper,
                CAST(rel_u_expanded_pct AS float)  AS rel_u_expanded_pct,
-               r_squared,
+               r_squared, dominant_rule,
                measurement_date::text             AS measurement_date
         FROM public_gold.fact_uncertainty
         {where}

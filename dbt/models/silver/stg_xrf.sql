@@ -2,7 +2,13 @@
 --
 -- Per-batch mean and SD are computed here (window function) so downstream
 -- Gold models and UQaaS calls receive pre-computed QC statistics.
--- z_score follows: z = (reading - batch_mean) / batch_sd
+--
+-- Levey-Jennings z-score uses ROBUST control limits (median + MAD-based SD),
+-- not the raw sample SD. Rationale: injected outliers inflate STDDEV_SAMP and
+-- mask themselves (z never exceeds ±3). The robust scale
+-- σ_robust = 1.4826 · MAD is insensitive to a minority of outliers, so genuine
+-- 3–5σ spikes and systematic drift correctly trigger Westgard rules.
+--   z = (reading - batch_median) / (1.4826 · MAD)
 
 WITH base AS (
     SELECT
@@ -26,9 +32,25 @@ batch_stats AS (
         element,
         AVG(reading_cps)                    AS batch_mean,
         STDDEV_SAMP(reading_cps)            AS batch_sd,
-        COUNT(*)                            AS batch_n
+        COUNT(*)                            AS batch_n,
+        -- robust center: median
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY reading_cps)
+                                            AS batch_median
     FROM base
     GROUP BY batch_id, element
+),
+
+batch_mad AS (
+    -- MAD = median of |xi - median|; robust SD = 1.4826 · MAD
+    SELECT
+        b.batch_id,
+        b.element,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (
+            ORDER BY ABS(b.reading_cps - s.batch_median)
+        )                                   AS mad
+    FROM base b
+    JOIN batch_stats s USING (batch_id, element)
+    GROUP BY b.batch_id, b.element
 )
 
 SELECT
@@ -45,7 +67,12 @@ SELECT
     s.batch_mean,
     s.batch_sd,
     s.batch_n,
+    ROUND((1.4826 * d.mad)::numeric, 4)     AS robust_sd,
+    -- robust z-score: (reading - median) / (1.4826 · MAD)
+    -- fall back to sample SD if MAD collapses to 0 (degenerate batch)
     CASE
+        WHEN d.mad > 0
+        THEN ROUND(((b.reading_cps - s.batch_median) / (1.4826 * d.mad))::numeric, 4)
         WHEN s.batch_sd > 0
         THEN ROUND(((b.reading_cps - s.batch_mean) / s.batch_sd)::numeric, 4)
         ELSE NULL
@@ -54,3 +81,4 @@ SELECT
                                             AS rel_deviation_pct
 FROM base b
 JOIN batch_stats s USING (batch_id, element)
+JOIN batch_mad   d USING (batch_id, element)
