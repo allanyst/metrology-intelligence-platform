@@ -29,10 +29,15 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 
+import sys
+
 import psycopg2
 import psycopg2.extras
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+
+sys.path.insert(0, "/opt/airflow/dags")
+from mip_notify import notify_failure   # noqa: E402
 
 DB_URL      = os.environ.get("MIP_DB_URL",    "postgresql://mip:mip_pass@postgres:5432/mip_db")
 UQAAS_URL   = os.environ.get("UQAAS_API_URL", "http://host.docker.internal:8003")
@@ -250,6 +255,7 @@ with DAG(
     default_args={
         "retries": 1,
         "retry_delay": timedelta(seconds=30),
+        "on_failure_callback": notify_failure,
     },
     tags=["mip", "gold", "uqaas", "uncertainty"],
 ) as dag:

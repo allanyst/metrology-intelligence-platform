@@ -9,6 +9,15 @@
 --
 -- Only XRF readings are evaluated here; balance QC is in fact_calibration_status.
 -- Window partitioned by (instrument_id, element, batch_id) ordered by measured_at.
+--
+-- Incremental: one batch == one measurement_date, and every window partitions by
+-- batch_id, so filtering to measurement_dates newer than what is already loaded
+-- keeps each batch whole and never splits a Westgard window.
+{{ config(
+    materialized        = "incremental",
+    unique_key          = "id",
+    incremental_strategy = "delete+insert",
+) }}
 
 WITH xrf AS (
     SELECT
@@ -24,6 +33,9 @@ WITH xrf AS (
         z_score
     FROM {{ ref("stg_xrf") }}
     WHERE z_score IS NOT NULL
+    {% if is_incremental() %}
+      AND measurement_date > (SELECT COALESCE(MAX(measurement_date), DATE '1900-01-01') FROM {{ this }})
+    {% endif %}
 ),
 
 rules AS (

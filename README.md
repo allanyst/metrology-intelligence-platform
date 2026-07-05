@@ -1,5 +1,7 @@
 # Metrology Intelligence Platform (MIP)
 
+[![pipeline status](https://gitlab.com/plasmallan/metrology-intelligence-platform/badges/main/pipeline.svg)](https://gitlab.com/plasmallan/metrology-intelligence-platform/-/commits/main)
+
 Calibration QC pipeline for analytical instruments (XRF, HPLC, balance) following a **Bronze → Silver → Gold Medallion architecture** with Airflow orchestration, dbt transformations, and uncertainty quantification via a dedicated **UQaaS microservice** (GUM Supplement 1 / CIPM-2007 Monte Carlo).
 
 Designed to demonstrate the intersection of metrological expertise (ISO 17025 / GUM) and modern data engineering patterns (Medallion, Airflow, dbt, microservices).
@@ -78,9 +80,14 @@ Westgard rules implemented: **1₃s** (reject), **2₂s** (reject), **R₄s** (r
 ```
 07:00  ingest_calibration      Bronze: synthetic XRF/HPLC/Balance data → raw_calibration
 07:30  transform_pipeline      dbt run (Silver + Gold) → dbt test (44 tests)
+                                → dbt snapshot (SCD Type 2) → notify_qc (alerts)
                                 └─▶ trigger uncertainty_enrichment
 08:00  uncertainty_enrichment  calls UQaaS /calculate/ × 5 → calibration_uncertainty
 ```
+
+Every DAG carries an `on_failure_callback` (`notify_failure`); `notify_qc` raises
+a per-instrument alert for anything `out_of_control`. Both route through Slack
+when `MIP_SLACK_WEBHOOK` is set, otherwise log a structured line.
 
 ---
 
@@ -90,26 +97,35 @@ Westgard rules implemented: **1₃s** (reject), **2₂s** (reject), **R₄s** (r
 metrology-intelligence-platform/
 ├── core/
 │   ├── synthetic_data.py       # XRF (drift + outliers), HPLC (curve), Balance (Laplace)
+│   ├── bronze_rows.py          # DataFrame → raw_calibration row mappers (shared)
 │   └── control_charts.py       # Westgard rules (Python) + annotate_dataframe
 ├── dags/
 │   ├── ingest_calibration.py   # Bronze: generate → upsert raw_calibration (idempotent)
-│   ├── transform_pipeline.py   # dbt run → dbt test → trigger uncertainty_enrichment
-│   └── uncertainty_enrichment.py # calls UQaaS, upserts calibration_uncertainty
+│   ├── transform_pipeline.py   # dbt run → test → snapshot → notify → trigger enrichment
+│   ├── uncertainty_enrichment.py # calls UQaaS, upserts calibration_uncertainty
+│   └── mip_notify.py           # Slack/log alerting: on_failure + out_of_control
 ├── dbt/
 │   ├── dbt_project.yml
+│   ├── snapshots/
+│   │   └── scd_calibration_status.sql     # SCD Type 2 status history (check strategy)
 │   └── models/
+│       ├── exposures.yml                   # lineage: dashboard + API as exposures
 │       ├── bronze/
 │       │   ├── sources.yml
 │       │   └── raw_calibration.sql        # view + measurement_date
 │       ├── silver/
-│       │   ├── stg_xrf.sql                # z_score, batch stats, rel_deviation
+│       │   ├── stg_xrf.sql                # robust z_score (MAD), batch stats
 │       │   ├── stg_hplc.sql               # rsd_pct, level stats, R² input
 │       │   └── stg_balances.sql           # MAD, Laplace b=MAD/ln(2), u_rep
 │       └── gold/
-│           ├── fact_control_charts.sql    # Westgard 1₃s/2₂s/R₄s/4₁s/10ₓ in SQL
+│           ├── fact_control_charts.sql    # incremental · XRF Westgard 1₃s…10ₓ
+│           ├── fact_balance_chart.sql      # incremental · Balance L-J 1₃s/2₂s
 │           ├── fact_calibration_status.sql # QC status per instrument/batch
 │           ├── fact_uncertainty.sql        # JOIN with UQaaS results
 │           └── dim_instruments.sql
+├── ci/
+│   └── seed_db.py              # apply init-db SQL + seed synthetic Bronze (CI/local)
+├── .gitlab-ci.yml             # unit-tests + dbt build against a Postgres service
 ├── api/
 │   ├── main.py
 │   ├── db.py
@@ -178,11 +194,41 @@ Interactive docs: **http://localhost:8004/docs**
 | Silver | `stg_xrf` | View | unique id, not_null element/reading/batch_mean |
 | Silver | `stg_hplc` | View | unique id, not_null analyte/rsd_pct |
 | Silver | `stg_balances` | View | unique id, not_null laplace_b/u_rep_g |
-| Gold | `fact_control_charts` | Table | unique id, accepted_values qc_status |
-| Gold | `fact_balance_chart` | Table | unique id, not_null z_score, accepted_values qc_status |
+| Gold | `fact_control_charts` | **Incremental** | unique id, not_null z_score, accepted_values qc_status |
+| Gold | `fact_balance_chart` | **Incremental** | unique id, not_null z_score, accepted_values qc_status |
 | Gold | `fact_calibration_status` | Table | not_null calibration_status, accepted_values |
 | Gold | `fact_uncertainty` | Table | LEFT JOIN fact_calibration_status + calibration_uncertainty |
 | Gold | `dim_instruments` | Table | unique instrument_id |
+| Snapshot | `scd_calibration_status` | SCD Type 2 | check strategy on calibration_status/dominant_rule |
+
+---
+
+## Engineering practices
+
+**Incremental control charts.** The per-reading fact tables (`fact_control_charts`,
+`fact_balance_chart`) are `incremental` with `delete+insert` on `id`. One batch ==
+one `measurement_date` and every Westgard window partitions by `batch_id`, so
+filtering to dates newer than `MAX(measurement_date)` in the target never splits a
+window — new days are appended without recomputing history.
+
+**SCD Type 2 history.** `dbt snapshot` records each instrument's
+`calibration_status` over time using the `check` strategy, opening a new version
+only when the status or dominant rule changes. This answers the ISO 17025 audit
+question *"since when has this instrument been out of control?"* — with
+`dbt_valid_from` / `dbt_valid_to` bounding each state.
+
+**Lineage exposures.** `exposures.yml` registers the Streamlit dashboard and the
+REST API as dbt exposures, so `dbt docs generate` renders the full
+Bronze → Silver → Gold → consumer graph.
+
+**Alerting.** Every DAG has an `on_failure_callback`; `notify_qc` raises a
+per-instrument alert for anything `out_of_control`. Both route to Slack when
+`MIP_SLACK_WEBHOOK` is set, else emit a structured log line.
+
+**CI.** `.gitlab-ci.yml` runs the pure-Python unit tests, then spins up a
+Postgres service, seeds synthetic Bronze data (`ci/seed_db.py`, reusing the same
+row mappers as the ingest DAG) and runs the full `dbt build` (run + test +
+snapshot) — the exact transforms Airflow runs in production.
 
 ---
 
@@ -260,8 +306,9 @@ Because the HPLC uncertainty is evaluated at the **highest calibration level** (
 | Layer | Technology |
 |---|---|
 | Orchestration | Apache Airflow 2.8.1, LocalExecutor |
-| Transformations | dbt-postgres 1.8.2 (view + table, 44 data tests) |
+| Transformations | dbt-postgres 1.8.2 (view + incremental tables, snapshots, 44 data tests) |
 | Persistence | PostgreSQL 15, psycopg2 |
+| CI/CD | GitLab CI (unit tests + dbt build on a Postgres service) |
 | API | FastAPI 0.111, Pydantic v2, Uvicorn |
 | Dashboard | Streamlit 1.35, Plotly 5.22 (Levey-Jennings, alerts) |
 | Uncertainty | UQaaS microservice (GUM Supl. 1, Monte Carlo, Laplace/Normal) |

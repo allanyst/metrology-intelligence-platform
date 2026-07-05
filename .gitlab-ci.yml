@@ -1,0 +1,47 @@
+# CI for the Metrology Intelligence Platform.
+#
+#   unit-tests : pure-Python tests (generators + Westgard rules), no database
+#   dbt-build  : spin up Postgres, seed synthetic Bronze data, then run the full
+#                dbt build (run + test + snapshot) — the same transforms Airflow
+#                runs in production.
+
+stages:
+  - test
+
+variables:
+  # Configure the `postgres:15` service container
+  POSTGRES_DB: mip_db
+  POSTGRES_USER: mip
+  POSTGRES_PASSWORD: mip_pass
+  POSTGRES_HOST_AUTH_METHOD: trust
+  # Reused by seed_db.py and the dbt profile (host = service alias `postgres`)
+  MIP_DB_URL: "postgresql://mip:mip_pass@postgres:5432/mip_db"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.pip-cache"
+
+cache:
+  paths:
+    - .pip-cache/
+
+unit-tests:
+  stage: test
+  image: python:3.11-slim
+  script:
+    - pip install -q -r requirements-dev.txt
+    - pytest tests/test_synthetic_data.py tests/test_control_charts.py -q
+
+dbt-build:
+  stage: test
+  image: python:3.11-slim
+  services:
+    - name: postgres:15
+      alias: postgres
+  script:
+    - pip install -q -r requirements-dev.txt dbt-postgres==1.8.2 psycopg2-binary==2.9.9
+    - python ci/seed_db.py
+    - >
+      dbt build
+      --project-dir dbt
+      --profiles-dir airflow/dbt_profiles
+      --target prod
+      --target-path /tmp/dbt_target
+      --log-path /tmp/dbt_logs

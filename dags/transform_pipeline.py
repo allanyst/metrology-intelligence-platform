@@ -1,23 +1,30 @@
 """
 Transform pipeline DAG — Metrology Intelligence Platform.
 
-Runs dbt Bronze → Silver → Gold after calibration data is ingested.
-Triggered automatically after ingest_calibration completes (TriggerDagRunOperator),
-or on its own daily schedule as a fallback.
+Runs dbt Bronze → Silver → Gold after calibration data is ingested, snapshots
+the calibration status history (SCD Type 2), raises QC alerts, and triggers the
+uncertainty enrichment.
 
 Tasks
 -----
-dbt_run      : materialize all models (bronze view → silver views → gold tables)
-dbt_test     : 37 data quality tests across all layers
-dbt_snapshot : SCD Type 2 snapshot of fact_calibration_status (future use)
+dbt_run       : materialize all models (bronze view → silver views → gold tables)
+dbt_test      : 44 data quality tests across all layers
+dbt_snapshot  : SCD Type 2 snapshot of fact_calibration_status
+notify_qc     : alert on any instrument that is out_of_control
+trigger_...   : kick off uncertainty_enrichment (UQaaS)
 """
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+from airflow.operators.python import PythonOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+
+sys.path.insert(0, "/opt/airflow/dags")
+from mip_notify import check_qc_alerts, notify_failure   # noqa: E402
 
 DBT_DIR      = "/opt/airflow/dbt"
 PROFILES_DIR = "/opt/airflow/dbt_profiles"
@@ -34,6 +41,7 @@ with DAG(
     default_args={
         "retries": 2,
         "retry_delay": timedelta(seconds=20),
+        "on_failure_callback": notify_failure,
     },
     tags=["mip", "dbt", "silver", "gold"],
 ) as dag:
@@ -48,10 +56,20 @@ with DAG(
         bash_command=_DBT.format(cmd="test"),
     )
 
+    dbt_snapshot = BashOperator(
+        task_id="dbt_snapshot",
+        bash_command=_DBT.format(cmd="snapshot"),
+    )
+
+    notify_qc = PythonOperator(
+        task_id="notify_qc",
+        python_callable=check_qc_alerts,
+    )
+
     trigger_enrichment = TriggerDagRunOperator(
         task_id="trigger_uncertainty_enrichment",
         trigger_dag_id="uncertainty_enrichment",
         wait_for_completion=False,
     )
 
-    dbt_run >> dbt_test >> trigger_enrichment
+    dbt_run >> dbt_test >> dbt_snapshot >> notify_qc >> trigger_enrichment

@@ -1,0 +1,35 @@
+version: 2
+
+exposures:
+  - name: mip_dashboard
+    label: "MIP Streamlit Dashboard"
+    type: dashboard
+    maturity: high
+    url: http://localhost:8502
+    description: >
+      Operational QC dashboard — Levey-Jennings control charts (XRF + Balance),
+      HPLC linearity, active Westgard alerts, and GUM expanded uncertainty.
+    depends_on:
+      - ref("fact_control_charts")
+      - ref("fact_balance_chart")
+      - ref("fact_calibration_status")
+      - ref("fact_uncertainty")
+    owner:
+      name: Allan Josué González Villalobos
+      email: allan.gonzalez98@outlook.com
+
+  - name: mip_api
+    label: "MIP REST API"
+    type: application
+    maturity: high
+    url: http://localhost:8004/docs
+    description: >
+      FastAPI service exposing calibration status, Levey-Jennings data, HPLC
+      linearity, and alerts — consumed by the dashboard and external clients.
+    depends_on:
+      - ref("fact_control_charts")
+      - ref("fact_balance_chart")
+      - ref("fact_uncertainty")
+    owner:
+      name: Allan Josué González Villalobos
+      email: allan.gonzalez98@outlook.com

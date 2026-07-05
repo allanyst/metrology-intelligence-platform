@@ -11,6 +11,14 @@
 --                                           fact_calibration_status)
 --   2_2s  2 consecutive z same side > ±2  → REJECT
 -- (4_1s/10x/R_4s are multi-level/paired-control rules — not applied here.)
+--
+-- Incremental: filter to measurement_dates newer than what is already loaded;
+-- each batch (one date) is self-contained for the 2_2s window.
+{{ config(
+    materialized        = "incremental",
+    unique_key          = "id",
+    incremental_strategy = "delete+insert",
+) }}
 
 WITH z AS (
     SELECT
@@ -29,6 +37,9 @@ WITH z AS (
             ELSE NULL
         END                                 AS z_score
     FROM {{ ref("stg_balances") }}
+    {% if is_incremental() %}
+    WHERE measurement_date > (SELECT COALESCE(MAX(measurement_date), DATE '1900-01-01') FROM {{ this }})
+    {% endif %}
 ),
 
 rules AS (

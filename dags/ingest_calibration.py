@@ -10,7 +10,6 @@ ignored via ON CONFLICT DO NOTHING.
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 from datetime import datetime, timedelta
@@ -21,68 +20,17 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 
 sys.path.insert(0, "/opt/airflow")
+sys.path.insert(0, "/opt/airflow/dags")
+from mip_notify import notify_failure   # noqa: E402
 
 DB_URL = os.environ.get("MIP_DB_URL", "postgresql://mip:mip_pass@postgres:5432/mip_db")
-
-
-# ── Row mappers ───────────────────────────────────────────────────────────────
-
-def _xrf_rows(df):
-    rows = []
-    for _, r in df.iterrows():
-        rows.append({
-            "batch_id":        r["batch_id"],
-            "instrument_id":   r["instrument_id"],
-            "instrument_type": r["instrument_type"],
-            "measured_at":     r["measured_at"].isoformat(),
-            "unit":            r["unit"],
-            "nominal_value":   float(r["nominal_value"]),
-            "reading":         float(r["reading"]),
-            "payload":         json.dumps({"element": r["element"]}),
-        })
-    return rows
-
-
-def _hplc_rows(df):
-    rows = []
-    for _, r in df.iterrows():
-        rows.append({
-            "batch_id":        r["batch_id"],
-            "instrument_id":   r["instrument_id"],
-            "instrument_type": r["instrument_type"],
-            "measured_at":     r["measured_at"].isoformat(),
-            "unit":            r["unit"],
-            "nominal_value":   None,
-            "reading":         float(r["peak_area"]),
-            "payload":         json.dumps({
-                "analyte":           r["analyte"],
-                "concentration_mgL": float(r["concentration_mgL"]),
-                "replicate":         int(r["replicate"]),
-            }),
-        })
-    return rows
-
-
-def _balance_rows(df):
-    rows = []
-    for _, r in df.iterrows():
-        rows.append({
-            "batch_id":        r["batch_id"],
-            "instrument_id":   r["instrument_id"],
-            "instrument_type": r["instrument_type"],
-            "measured_at":     r["measured_at"].isoformat(),
-            "unit":            r["unit"],
-            "nominal_value":   float(r["nominal_mass_g"]),
-            "reading":         float(r["reading_g"]),
-            "payload":         json.dumps({"bias_g": float(r["bias_g"])}),
-        })
-    return rows
 
 
 # ── Main ingestion task ───────────────────────────────────────────────────────
 
 def ingest_calibration_data(**context):
     from core.synthetic_data import generate_full_dataset
+    from core.bronze_rows import dataset_to_rows
 
     logical_date = context["logical_date"]
     seed = int(logical_date.strftime("%Y%m%d")) % (2**31)
@@ -90,13 +38,7 @@ def ingest_calibration_data(**context):
     print(f"Generating synthetic data for {logical_date.date()} (seed={seed})")
     datasets = generate_full_dataset(seed=seed)
 
-    all_rows = (
-        _xrf_rows(datasets["xrf_fe"])
-        + _xrf_rows(datasets["xrf_cu"])
-        + _xrf_rows(datasets["xrf_pb"])
-        + _hplc_rows(datasets["hplc"])
-        + _balance_rows(datasets["balance"])
-    )
+    all_rows = dataset_to_rows(datasets)
 
     insert_sql = """
         INSERT INTO raw_calibration
@@ -158,6 +100,7 @@ with DAG(
     default_args={
         "retries": 2,
         "retry_delay": timedelta(seconds=20),
+        "on_failure_callback": notify_failure,
     },
     tags=["mip", "bronze", "ingestion"],
 ) as dag:
